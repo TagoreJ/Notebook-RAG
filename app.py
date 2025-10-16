@@ -8,6 +8,7 @@ import docx
 from tqdm import tqdm
 from google import genai
 from pinecone import Pinecone
+from pinecone.models import ServerlessSpec
 
 # ============================
 # 1️⃣ Load Secrets
@@ -15,7 +16,8 @@ from pinecone import Pinecone
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-    PINECONE_INDEX = st.secrets["PINECONE_INDEX"]  # fixed index name
+    PINECONE_INDEX = st.secrets["PINECONE_INDEX"]
+    PINECONE_REGION = st.secrets.get("PINECONE_REGION", "us-east-1")  # default region
 except Exception:
     st.error("⚠️ Please configure your API keys in Streamlit Cloud (Settings → Secrets).")
     st.stop()
@@ -23,23 +25,22 @@ except Exception:
 # ============================
 # 2️⃣ Initialize Clients
 # ============================
-# Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
-
-# Pinecone v5+ client
 pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 
 # ============================
-# 3️⃣ Create / Connect Index (Serverless)
+# 3️⃣ Create / Connect Serverless Index
 # ============================
+spec = ServerlessSpec(cloud="aws", region=PINECONE_REGION)
+
 if PINECONE_INDEX not in pinecone_client.list_indexes():
     pinecone_client.create_index(
         name=PINECONE_INDEX,
         dimension=768,   # Gemini embedding dimension
-        metric="cosine"  # similarity metric
+        metric="cosine",
+        spec=spec
     )
 
-# Connect to index
 index = pinecone_client.Index(PINECONE_INDEX)
 
 # ============================
@@ -153,7 +154,6 @@ with st.sidebar:
     st.write(f"**Namespace:** {SESSION_NAMESPACE}")
     st.markdown("---")
 
-# ---------- File Upload ----------
 uploaded_file = st.file_uploader("📁 Upload file (PDF/DOCX/TXT):", type=["pdf", "docx", "txt"])
 
 if uploaded_file:
@@ -181,7 +181,6 @@ if uploaded_file:
 
 st.divider()
 
-# ---------- Q&A Section ----------
 st.header("💬 Ask your question")
 question = st.text_input("Enter your question:")
 top_k = st.slider("Top K results to fetch", 1, 8, 4)
