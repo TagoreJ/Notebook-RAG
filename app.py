@@ -15,7 +15,6 @@ import pinecone
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-    PINECONE_ENV = st.secrets["PINECONE_ENV"]
     PINECONE_INDEX = st.secrets["PINECONE_INDEX"]
 except Exception:
     st.error("⚠️ Please configure your API keys in Streamlit Cloud (Settings → Secrets).")
@@ -28,7 +27,7 @@ except Exception:
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Pinecone v5+ client
-pinecone_client = pinecone.Client(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+pinecone_client = pinecone.Pinecone(api_key=PINECONE_API_KEY)
 
 # Auto-create index if not exists
 if PINECONE_INDEX not in pinecone_client.list_indexes():
@@ -146,7 +145,6 @@ with st.sidebar:
     st.header("🔒 API Configuration")
     st.success("All API keys securely loaded from Streamlit Secrets.")
     st.write(f"**Pinecone Index:** {PINECONE_INDEX}")
-    st.write(f"**Environment:** {PINECONE_ENV}")
     st.write(f"**Namespace:** {SESSION_NAMESPACE}")
     st.markdown("---")
 
