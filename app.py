@@ -1,0 +1,199 @@
+import os
+import uuid
+import hashlib
+import streamlit as st
+from typing import List
+import PyPDF2
+import docx
+from tqdm import tqdm
+from google import genai
+import pinecone
+
+# ============================
+# 1️⃣ Load Secrets (for Streamlit Cloud)
+# ============================
+try:
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+    PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
+    PINECONE_ENV = st.secrets["PINECONE_ENV"]
+    PINECONE_INDEX = st.secrets["PINECONE_INDEX"]
+except Exception:
+    st.error("⚠️ Please configure your API keys in Streamlit Cloud (Settings → Secrets).")
+    st.stop()
+
+# ============================
+# 2️⃣ Initialize Clients
+# ============================
+client = genai.Client(api_key=GEMINI_API_KEY)
+pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+index = pinecone.Index(PINECONE_INDEX)
+
+# Create a namespace unique to this Streamlit session (so each user is isolated)
+SESSION_NAMESPACE = st.session_state.get("namespace", str(uuid.uuid4()))
+st.session_state["namespace"] = SESSION_NAMESPACE
+
+# ============================
+# 3️⃣ Helper Functions
+# ============================
+
+def extract_text_from_pdf(file):
+    reader = PyPDF2.PdfReader(file)
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+def extract_text_from_docx(file):
+    doc = docx.Document(file)
+    return "\n".join(p.text for p in doc.paragraphs)
+
+def extract_text_from_txt(file):
+    return file.read().decode("utf-8")
+
+def extract_text(file):
+    name = file.name.lower()
+    if name.endswith(".pdf"):
+        return extract_text_from_pdf(file)
+    elif name.endswith(".docx") or name.endswith(".doc"):
+        return extract_text_from_docx(file)
+    elif name.endswith(".txt"):
+        return extract_text_from_txt(file)
+    else:
+        try:
+            return file.read().decode("utf-8")
+        except Exception:
+            return ""
+
+def chunk_text(text, chunk_size=1000, overlap=150):
+    tokens = text.split()
+    chunks, i = [], 0
+    while i < len(tokens):
+        chunks.append(" ".join(tokens[i:i + chunk_size]))
+        i += chunk_size - overlap
+    return chunks
+
+def embed_texts(texts, model="gemini-embedding-001"):
+    res = client.models.embed_content(model=model, contents=texts)
+    return res.embeddings
+
+def compute_doc_id(filename, size):
+    """Hash filename+size to create a unique stable document ID."""
+    key = f"{filename}_{size}".encode("utf-8")
+    return hashlib.sha1(key).hexdigest()
+
+def upsert_chunks(chunks, metadata_base, namespace):
+    BATCH_SIZE = 50
+    for i in tqdm(range(0, len(chunks), BATCH_SIZE), desc="Embedding"):
+        batch_texts = chunks[i:i + BATCH_SIZE]
+        embeddings = embed_texts(batch_texts)
+        vectors = []
+        for j, emb in enumerate(embeddings):
+            meta = metadata_base.copy()
+            meta.update({
+                "chunk_index": i + j,
+                "text_preview": batch_texts[j][:300],
+            })
+            vectors.append((str(uuid.uuid4()), emb, meta))
+        index.upsert(vectors=vectors, namespace=namespace)
+
+def query_pinecone(query, top_k=4, model="gemini-embedding-001", namespace="default"):
+    res = client.models.embed_content(model=model, contents=query)
+    emb = res.embeddings[0]
+    return index.query(vector=emb, top_k=top_k, include_metadata=True, namespace=namespace)
+
+def build_prompt(chunks, question):
+    ctx = ""
+    for m in chunks:
+        md = m.get("metadata", {})
+        ctx += f"\n---\nSource: {md.get('source','?')} | Chunk: {md.get('chunk_index','?')}\n{md.get('text_preview','')}"
+    return f"""
+You are a helpful assistant. Use ONLY the below context to answer the user's question.
+If the answer isn't in the context, reply with "I don't know."
+
+Context:
+{ctx}
+
+Question: {question}
+
+Answer:
+"""
+
+def generate_answer(prompt, model="gemini-2.5-flash"):
+    response = client.models.generate_content(model=model, contents=prompt)
+    return response.text
+
+def delete_doc(namespace):
+    try:
+        index.delete(delete_all=True, namespace=namespace)
+        return True
+    except Exception as e:
+        st.error(f"Error deleting namespace: {e}")
+        return False
+
+# ============================
+# 4️⃣ Streamlit UI
+# ============================
+st.set_page_config(page_title="Google RAG + Pinecone", layout="wide")
+st.title("📚 Streamlit RAG with Google Gemini + Pinecone")
+st.caption("Each user session has a separate Pinecone namespace for privacy.")
+
+with st.sidebar:
+    st.header("🔒 API Configuration")
+    st.success("All API keys securely loaded from Streamlit Secrets.")
+    st.write(f"**Pinecone Index:** {PINECONE_INDEX}")
+    st.write(f"**Environment:** {PINECONE_ENV}")
+    st.write(f"**Namespace:** {SESSION_NAMESPACE}")
+    st.markdown("---")
+
+# ---------- File Upload ----------
+uploaded_file = st.file_uploader("📁 Upload file (PDF/DOCX/TXT):", type=["pdf", "docx", "txt"])
+
+if uploaded_file:
+    file_size = uploaded_file.size
+    doc_id = compute_doc_id(uploaded_file.name, file_size)
+    st.info(f"File uploaded: **{uploaded_file.name}** | Size: {round(file_size/1024,1)} KB")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📤 Index File"):
+            with st.spinner("Extracting and embedding file..."):
+                text = extract_text(uploaded_file)
+                if not text.strip():
+                    st.error("Could not extract text from file.")
+                else:
+                    chunks = chunk_text(text, chunk_size=800, overlap=150)
+                    meta_base = {"source": uploaded_file.name, "doc_id": doc_id}
+                    upsert_chunks(chunks, meta_base, namespace=SESSION_NAMESPACE)
+                    st.success("✅ File indexed into Pinecone successfully.")
+
+    with col2:
+        if st.button("🗑️ Delete Indexed Data"):
+            if delete_doc(SESSION_NAMESPACE):
+                st.success("✅ Deleted all vectors for this session.")
+
+st.divider()
+
+# ---------- Q&A Section ----------
+st.header("💬 Ask your question")
+question = st.text_input("Enter your question:")
+top_k = st.slider("Top K results to fetch", 1, 8, 4)
+
+if st.button("🔍 Get Answer") and question.strip():
+    with st.spinner("Retrieving from Pinecone..."):
+        results = query_pinecone(question, top_k=top_k, namespace=SESSION_NAMESPACE)
+
+    matches = getattr(results, "matches", [])
+    if not matches:
+        st.warning("No matching results found.")
+    else:
+        st.write("### 🔹 Top Retrieved Chunks")
+        for m in matches:
+            md = m.metadata
+            st.markdown(f"- **{md.get('source')}** | Score: {m.score:.4f}")
+            st.caption(md.get("text_preview", "")[:300])
+
+        prompt = build_prompt(matches, question)
+        with st.spinner("Generating answer with Gemini..."):
+            answer = generate_answer(prompt)
+        st.subheader("🧠 Answer")
+        st.write(answer)
+
+st.markdown("---")
+st.caption("Built with ❤️ using Google Gemini + Pinecone + Streamlit")
