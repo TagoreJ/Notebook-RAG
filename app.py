@@ -7,7 +7,7 @@ import PyPDF2
 import docx
 from tqdm import tqdm
 from google import genai
-import pinecone
+from pinecone import Pinecone, ServerlessSpec
 
 # ============================
 # 1️⃣ Load Secrets (Streamlit Cloud)
@@ -27,25 +27,33 @@ except Exception:
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Pinecone v5+ client
-pinecone_client = pinecone.Pinecone(api_key=PINECONE_API_KEY)
+pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 
-# Auto-create index if not exists
+# ============================
+# 3️⃣ Create / Connect Index
+# ============================
 if PINECONE_INDEX not in pinecone_client.list_indexes():
     pinecone_client.create_index(
         name=PINECONE_INDEX,
-        dimension=768,  # Google Gemini embeddings dimension
-        metric="cosine",
+        spec=ServerlessSpec(
+            dimension=768,   # Gemini embedding dimension
+            metric="cosine",
+            pod_type="p1"
+        )
     )
 
 # Connect to index
 index = pinecone_client.Index(PINECONE_INDEX)
 
-# Create a per-session namespace
-SESSION_NAMESPACE = st.session_state.get("namespace", str(uuid.uuid4()))
-st.session_state["namespace"] = SESSION_NAMESPACE
+# ============================
+# 4️⃣ Multi-user Namespace
+# ============================
+if "namespace" not in st.session_state:
+    st.session_state["namespace"] = str(uuid.uuid4())
+SESSION_NAMESPACE = st.session_state["namespace"]
 
 # ============================
-# 3️⃣ Helper Functions
+# 5️⃣ Helper Functions
 # ============================
 def extract_text_from_pdf(file):
     reader = PyPDF2.PdfReader(file)
@@ -135,15 +143,15 @@ def delete_namespace(namespace):
         return False
 
 # ============================
-# 4️⃣ Streamlit UI
+# 6️⃣ Streamlit UI
 # ============================
 st.set_page_config(page_title="Google RAG + Pinecone", layout="wide")
 st.title("📚 Streamlit RAG with Google Gemini + Pinecone")
-st.caption("Each user session has its own Pinecone namespace for privacy.")
+st.caption("Each user session has its own namespace for multi-user isolation.")
 
 with st.sidebar:
     st.header("🔒 API Configuration")
-    st.success("All API keys securely loaded from Streamlit Secrets.")
+    st.success("All API keys loaded securely from Streamlit Secrets.")
     st.write(f"**Pinecone Index:** {PINECONE_INDEX}")
     st.write(f"**Namespace:** {SESSION_NAMESPACE}")
     st.markdown("---")
@@ -167,10 +175,10 @@ if uploaded_file:
                     chunks = chunk_text(text, chunk_size=800, overlap=150)
                     meta_base = {"source": uploaded_file.name, "doc_id": doc_id}
                     upsert_chunks(chunks, meta_base, namespace=SESSION_NAMESPACE)
-                    st.success("✅ File indexed into Pinecone successfully.")
+                    st.success("✅ File indexed successfully.")
 
     with col2:
-        if st.button("🗑️ Delete Indexed Data"):
+        if st.button("🗑️ Delete Session Data"):
             if delete_namespace(SESSION_NAMESPACE):
                 st.success("✅ Deleted all vectors for this session.")
 
@@ -203,3 +211,11 @@ if st.button("🔍 Get Answer") and question.strip():
 
 st.markdown("---")
 st.caption("Built with ❤️ using Google Gemini + Pinecone + Streamlit")
+
+# ============================
+# 7️⃣ Cleanup: Delete namespace on session end
+# ============================
+def cleanup():
+    delete_namespace(SESSION_NAMESPACE)
+
+st.on_session_end(cleanup)
