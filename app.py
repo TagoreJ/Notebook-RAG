@@ -7,15 +7,16 @@ import PyPDF2
 import docx
 from tqdm import tqdm
 from google import genai
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
+from pinecone.models import ServerlessSpec  # ✅ Correct import
 
 # ============================
-# 1️⃣ Load Secrets (Streamlit Cloud)
+# 1️⃣ Load Secrets
 # ============================
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-    PINECONE_INDEX = st.secrets["PINECONE_INDEX"]
+    PINECONE_INDEX = st.secrets["PINECONE_INDEX"]  # Can be fixed index
 except Exception:
     st.error("⚠️ Please configure your API keys in Streamlit Cloud (Settings → Secrets).")
     st.stop()
