@@ -8,7 +8,6 @@ import docx
 from tqdm import tqdm
 from google import genai
 import pinecone
-from pinecone.models import ServerlessIndexSpecification
 
 # ============================
 # 1️⃣ Load Secrets
@@ -26,32 +25,22 @@ except Exception:
 # Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Pinecone client
+# Pinecone
 pinecone_client = pinecone.Client(api_key=PINECONE_API_KEY)
 
 # ============================
-# 3️⃣ Create a per-session index
+# 3️⃣ Fixed Pinecone Index
 # ============================
-if "index_name" not in st.session_state:
-    st.session_state["index_name"] = f"session-{uuid.uuid4().hex[:8]}"
-SESSION_INDEX = st.session_state["index_name"]
+INDEX_NAME = "sainotes"
 
-# Create serverless index if not exists
-if SESSION_INDEX not in pinecone_client.list_indexes():
-    spec = ServerlessIndexSpecification(
-        dimension=768,
-        metric="cosine"
-    )
-    pinecone_client.create_index(
-        name=SESSION_INDEX,
-        spec=spec
-    )
+if INDEX_NAME not in pinecone_client.list_indexes():
+    st.error(f"⚠️ Pinecone index '{INDEX_NAME}' not found. Please create it first.")
+    st.stop()
 
-# Connect to index
-index = pinecone_client.Index(SESSION_INDEX)
+index = pinecone_client.Index(INDEX_NAME)
 
 # ============================
-# 4️⃣ Multi-user namespace
+# 4️⃣ Multi-user Namespace
 # ============================
 if "namespace" not in st.session_state:
     st.session_state["namespace"] = str(uuid.uuid4())
@@ -152,12 +141,12 @@ def delete_namespace(namespace):
 # ============================
 st.set_page_config(page_title="Google RAG + Pinecone", layout="wide")
 st.title("📚 Streamlit RAG with Google Gemini + Pinecone")
-st.caption("Each user session has its own temporary index and namespace for multi-user isolation.")
+st.caption("Each user session has its own namespace for multi-user isolation.")
 
 with st.sidebar:
     st.header("🔒 API Configuration")
     st.success("All API keys loaded securely from Streamlit Secrets.")
-    st.write(f"**Pinecone Index (temporary):** {SESSION_INDEX}")
+    st.write(f"**Pinecone Index:** {INDEX_NAME}")
     st.write(f"**Namespace:** {SESSION_NAMESPACE}")
     st.markdown("---")
 
@@ -218,13 +207,9 @@ st.markdown("---")
 st.caption("Built with ❤️ using Google Gemini + Pinecone + Streamlit")
 
 # ============================
-# 7️⃣ Cleanup: Delete session index & namespace on session end
+# 7️⃣ Cleanup: Delete namespace on session end
 # ============================
 def cleanup():
-    try:
-        if SESSION_INDEX in pinecone_client.list_indexes():
-            pinecone_client.delete_index(SESSION_INDEX)
-    except Exception:
-        pass
+    delete_namespace(SESSION_NAMESPACE)
 
 st.on_session_end(cleanup)
