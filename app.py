@@ -8,7 +8,6 @@ import docx
 from tqdm import tqdm
 from google import genai
 from pinecone import Pinecone
-from pinecone.models import ServerlessSpec  # ✅ Correct import
 
 # ============================
 # 1️⃣ Load Secrets
@@ -16,7 +15,7 @@ from pinecone.models import ServerlessSpec  # ✅ Correct import
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-    PINECONE_INDEX = st.secrets["PINECONE_INDEX"]  # Can be fixed index
+    PINECONE_INDEX = st.secrets["PINECONE_INDEX"]  # fixed index name
 except Exception:
     st.error("⚠️ Please configure your API keys in Streamlit Cloud (Settings → Secrets).")
     st.stop()
@@ -36,11 +35,9 @@ pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 if PINECONE_INDEX not in pinecone_client.list_indexes():
     pinecone_client.create_index(
         name=PINECONE_INDEX,
-        spec=ServerlessSpec(
-            dimension=768,   # Gemini embedding dimension
-            metric="cosine",
-            pod_type="p1"
-        )
+        dimension=768,   # Gemini embedding dimension
+        metric="cosine", # similarity metric
+        pod_type="p1"    # serverless pod type
     )
 
 # Connect to index
