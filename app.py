@@ -26,18 +26,13 @@ except Exception:
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Pinecone
-pinecone_client = pinecone.Client(api_key=PINECONE_API_KEY)
+pinecone.init(api_key=PINECONE_API_KEY)
 
 # ============================
 # 3️⃣ Fixed Pinecone Index
 # ============================
 INDEX_NAME = "sainotes"
-
-if INDEX_NAME not in pinecone_client.list_indexes():
-    st.error(f"⚠️ Pinecone index '{INDEX_NAME}' not found. Please create it first.")
-    st.stop()
-
-index = pinecone_client.Index(INDEX_NAME)
+index = pinecone.Index(INDEX_NAME)
 
 # ============================
 # 4️⃣ Multi-user Namespace
