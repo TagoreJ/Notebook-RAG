@@ -16,10 +16,9 @@ from pinecone.models import ServerlessSpec
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-    PINECONE_INDEX = st.secrets["PINECONE_INDEX"]
-    PINECONE_REGION = st.secrets.get("PINECONE_REGION", "us-east-1")  # default region
+    PINECONE_REGION = st.secrets["PINECONE_REGION"]  # e.g., "us-east-1"
 except Exception:
-    st.error("⚠️ Please configure your API keys in Streamlit Cloud (Settings → Secrets).")
+    st.error("⚠️ Please configure your API keys in Streamlit Secrets.")
     st.stop()
 
 # ============================
@@ -29,22 +28,27 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 
 # ============================
-# 3️⃣ Create / Connect Serverless Index
+# 3️⃣ Create Unique Index per Session
 # ============================
-spec = ServerlessSpec(cloud="aws", region=PINECONE_REGION)
+if "pinecone_index" not in st.session_state:
+    SESSION_INDEX = f"rag-{uuid.uuid4().hex[:8]}"
+    st.session_state["pinecone_index"] = SESSION_INDEX
+else:
+    SESSION_INDEX = st.session_state["pinecone_index"]
 
-if PINECONE_INDEX not in pinecone_client.list_indexes():
+# Create index if not exists
+if SESSION_INDEX not in pinecone_client.list_indexes():
     pinecone_client.create_index(
-        name=PINECONE_INDEX,
-        dimension=768,   # Gemini embedding dimension
+        name=SESSION_INDEX,
+        dimension=768,  # Gemini embedding dimension
         metric="cosine",
-        spec=spec
+        spec=ServerlessSpec(cloud="aws", region=PINECONE_REGION)
     )
 
-index = pinecone_client.Index(PINECONE_INDEX)
+index = pinecone_client.Index(SESSION_INDEX)
 
 # ============================
-# 4️⃣ Multi-user Namespace
+# 4️⃣ Session Namespace for Multi-user
 # ============================
 if "namespace" not in st.session_state:
     st.session_state["namespace"] = str(uuid.uuid4())
@@ -132,12 +136,12 @@ Answer:
 def generate_answer(prompt, model="gemini-2.5-flash"):
     return client.models.generate_content(model=model, contents=prompt).text
 
-def delete_namespace(namespace):
+def delete_index(index_name):
     try:
-        index.delete(delete_all=True, namespace=namespace)
+        pinecone_client.delete_index(index_name)
         return True
     except Exception as e:
-        st.error(f"Error deleting namespace: {e}")
+        st.error(f"Error deleting index: {e}")
         return False
 
 # ============================
@@ -145,16 +149,17 @@ def delete_namespace(namespace):
 # ============================
 st.set_page_config(page_title="Google RAG + Pinecone", layout="wide")
 st.title("📚 Streamlit RAG with Google Gemini + Pinecone")
-st.caption("Each user session has its own namespace for multi-user isolation.")
+st.caption("Each user session has its own Pinecone index and namespace.")
 
 with st.sidebar:
-    st.header("🔒 API Configuration")
-    st.success("All API keys loaded securely from Streamlit Secrets.")
-    st.write(f"**Pinecone Index:** {PINECONE_INDEX}")
+    st.header("🔒 API Info")
+    st.success("All API keys loaded securely.")
+    st.write(f"**Session Index:** {SESSION_INDEX}")
     st.write(f"**Namespace:** {SESSION_NAMESPACE}")
     st.markdown("---")
 
-uploaded_file = st.file_uploader("📁 Upload file (PDF/DOCX/TXT):", type=["pdf", "docx", "txt"])
+# ---------- File Upload ----------
+uploaded_file = st.file_uploader("📁 Upload file (PDF/DOCX/TXT):", type=["pdf","docx","txt"])
 
 if uploaded_file:
     file_size = uploaded_file.size
@@ -175,12 +180,13 @@ if uploaded_file:
                     st.success("✅ File indexed successfully.")
 
     with col2:
-        if st.button("🗑️ Delete Session Data"):
-            if delete_namespace(SESSION_NAMESPACE):
-                st.success("✅ Deleted all vectors for this session.")
+        if st.button("🗑️ Delete Session Index"):
+            if delete_index(SESSION_INDEX):
+                st.success("✅ Deleted entire session index.")
 
 st.divider()
 
+# ---------- Q&A Section ----------
 st.header("💬 Ask your question")
 question = st.text_input("Enter your question:")
 top_k = st.slider("Top K results to fetch", 1, 8, 4)
@@ -209,9 +215,9 @@ st.markdown("---")
 st.caption("Built with ❤️ using Google Gemini + Pinecone + Streamlit")
 
 # ============================
-# 7️⃣ Cleanup: Delete namespace on session end
+# 7️⃣ Cleanup on Session End
 # ============================
 def cleanup():
-    delete_namespace(SESSION_NAMESPACE)
+    delete_index(SESSION_INDEX)
 
 st.on_session_end(cleanup)
