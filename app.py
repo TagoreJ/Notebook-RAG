@@ -10,7 +10,7 @@ from google import genai
 import pinecone
 
 # ============================
-# 1️⃣ Load Secrets (for Streamlit Cloud)
+# 1️⃣ Load Secrets (Streamlit Cloud)
 # ============================
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -24,18 +24,30 @@ except Exception:
 # ============================
 # 2️⃣ Initialize Clients
 # ============================
+# Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
-pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
-index = pinecone.Index(PINECONE_INDEX)
 
-# Create a namespace unique to this Streamlit session (so each user is isolated)
+# Pinecone v5+ client
+pinecone_client = pinecone.Client(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+
+# Auto-create index if not exists
+if PINECONE_INDEX not in pinecone_client.list_indexes():
+    pinecone_client.create_index(
+        name=PINECONE_INDEX,
+        dimension=768,  # Google Gemini embeddings dimension
+        metric="cosine",
+    )
+
+# Connect to index
+index = pinecone_client.Index(PINECONE_INDEX)
+
+# Create a per-session namespace
 SESSION_NAMESPACE = st.session_state.get("namespace", str(uuid.uuid4()))
 st.session_state["namespace"] = SESSION_NAMESPACE
 
 # ============================
 # 3️⃣ Helper Functions
 # ============================
-
 def extract_text_from_pdf(file):
     reader = PyPDF2.PdfReader(file)
     return "\n".join(page.extract_text() or "" for page in reader.pages)
@@ -74,18 +86,16 @@ def embed_texts(texts, model="gemini-embedding-001"):
     return res.embeddings
 
 def compute_doc_id(filename, size):
-    """Hash filename+size to create a unique stable document ID."""
-    key = f"{filename}_{size}".encode("utf-8")
-    return hashlib.sha1(key).hexdigest()
+    return hashlib.sha1(f"{filename}_{size}".encode("utf-8")).hexdigest()
 
-def upsert_chunks(chunks, metadata_base, namespace):
+def upsert_chunks(chunks, meta_base, namespace):
     BATCH_SIZE = 50
     for i in tqdm(range(0, len(chunks), BATCH_SIZE), desc="Embedding"):
         batch_texts = chunks[i:i + BATCH_SIZE]
         embeddings = embed_texts(batch_texts)
         vectors = []
         for j, emb in enumerate(embeddings):
-            meta = metadata_base.copy()
+            meta = meta_base.copy()
             meta.update({
                 "chunk_index": i + j,
                 "text_preview": batch_texts[j][:300],
@@ -94,8 +104,7 @@ def upsert_chunks(chunks, metadata_base, namespace):
         index.upsert(vectors=vectors, namespace=namespace)
 
 def query_pinecone(query, top_k=4, model="gemini-embedding-001", namespace="default"):
-    res = client.models.embed_content(model=model, contents=query)
-    emb = res.embeddings[0]
+    emb = client.models.embed_content(model=model, contents=query).embeddings[0]
     return index.query(vector=emb, top_k=top_k, include_metadata=True, namespace=namespace)
 
 def build_prompt(chunks, question):
@@ -116,10 +125,9 @@ Answer:
 """
 
 def generate_answer(prompt, model="gemini-2.5-flash"):
-    response = client.models.generate_content(model=model, contents=prompt)
-    return response.text
+    return client.models.generate_content(model=model, contents=prompt).text
 
-def delete_doc(namespace):
+def delete_namespace(namespace):
     try:
         index.delete(delete_all=True, namespace=namespace)
         return True
@@ -132,7 +140,7 @@ def delete_doc(namespace):
 # ============================
 st.set_page_config(page_title="Google RAG + Pinecone", layout="wide")
 st.title("📚 Streamlit RAG with Google Gemini + Pinecone")
-st.caption("Each user session has a separate Pinecone namespace for privacy.")
+st.caption("Each user session has its own Pinecone namespace for privacy.")
 
 with st.sidebar:
     st.header("🔒 API Configuration")
@@ -165,7 +173,7 @@ if uploaded_file:
 
     with col2:
         if st.button("🗑️ Delete Indexed Data"):
-            if delete_doc(SESSION_NAMESPACE):
+            if delete_namespace(SESSION_NAMESPACE):
                 st.success("✅ Deleted all vectors for this session.")
 
 st.divider()
@@ -177,7 +185,7 @@ top_k = st.slider("Top K results to fetch", 1, 8, 4)
 
 if st.button("🔍 Get Answer") and question.strip():
     with st.spinner("Retrieving from Pinecone..."):
-        results = query_pinecone(question, top_k=top_k, namespace=SESSION_NAMESPACE)
+        results = query_pinecone(question, top_k, namespace=SESSION_NAMESPACE)
 
     matches = getattr(results, "matches", [])
     if not matches:
@@ -187,7 +195,7 @@ if st.button("🔍 Get Answer") and question.strip():
         for m in matches:
             md = m.metadata
             st.markdown(f"- **{md.get('source')}** | Score: {m.score:.4f}")
-            st.caption(md.get("text_preview", "")[:300])
+            st.caption(md.get("text_preview","")[:300])
 
         prompt = build_prompt(matches, question)
         with st.spinner("Generating answer with Gemini..."):
