@@ -30,14 +30,13 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 
 # ============================
-# 3️⃣ Create / Connect Index
+# 3️⃣ Create / Connect Index (Serverless)
 # ============================
 if PINECONE_INDEX not in pinecone_client.list_indexes():
     pinecone_client.create_index(
         name=PINECONE_INDEX,
         dimension=768,   # Gemini embedding dimension
-        metric="cosine", # similarity metric
-        pod_type="p1"    # serverless pod type
+        metric="cosine"  # similarity metric
     )
 
 # Connect to index
