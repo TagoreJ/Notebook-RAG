@@ -7,7 +7,7 @@ import PyPDF2
 import docx
 from tqdm import tqdm
 from google import genai
-import pinecone
+from pinecone import Pinecone
 
 # ============================
 # 1️⃣ Load Secrets
@@ -25,14 +25,14 @@ except Exception:
 # Google Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Pinecone
-pinecone.init(api_key=PINECONE_API_KEY)
+# Pinecone v5+ client
+pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 
 # ============================
 # 3️⃣ Fixed Pinecone Index
 # ============================
 INDEX_NAME = "sainotes"
-index = pinecone.Index(INDEX_NAME)
+index = pinecone_client.Index(INDEX_NAME)
 
 # ============================
 # 4️⃣ Multi-user Namespace
