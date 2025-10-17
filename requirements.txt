@@ -1,4 +1,5 @@
 streamlit
+google.generativeai
 google-genai
 pinecone
 PyPDF2
