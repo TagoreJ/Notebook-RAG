@@ -4,3 +4,4 @@ pinecone
 PyPDF2
 python-docx
 tqdm
+pypdf
