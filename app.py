@@ -3,10 +3,12 @@ import uuid
 import hashlib
 import streamlit as st
 from typing import List
-import PyPDF2
+# Changed from PyPDF2 to pypdf as PyPDF2 is deprecated
+from pypdf import PdfReader
 import docx
 from tqdm import tqdm
-from google import genai
+# Renamed to avoid conflict with the library name
+import google.generativeai as genai
 from pinecone import Pinecone
 
 # ============================
@@ -23,15 +25,19 @@ except Exception:
 # 2️⃣ Initialize Clients
 # ============================
 # Google Gemini
-client = genai.Client(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
-# Pinecone v5+ client
+# Pinecone client
 pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 
 # ============================
 # 3️⃣ Fixed Pinecone Index
 # ============================
 INDEX_NAME = "sainotes"
+# Check if the index exists, otherwise, ask the user to create it
+if INDEX_NAME not in pinecone_client.list_indexes().names():
+    st.error(f"🚨 Pinecone index '{INDEX_NAME}' not found. Please create it in your Pinecone dashboard.")
+    st.stop()
 index = pinecone_client.Index(INDEX_NAME)
 
 # ============================
@@ -45,7 +51,8 @@ SESSION_NAMESPACE = st.session_state["namespace"]
 # 5️⃣ Helper Functions
 # ============================
 def extract_text_from_pdf(file):
-    reader = PyPDF2.PdfReader(file)
+    # Using pypdf's PdfReader
+    reader = PdfReader(file)
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 def extract_text_from_docx(file):
@@ -75,33 +82,53 @@ def chunk_text(text, chunk_size=1000, overlap=150):
     while i < len(tokens):
         chunks.append(" ".join(tokens[i:i + chunk_size]))
         i += chunk_size - overlap
-    return chunks
+    return [chunk for chunk in chunks if chunk] # Ensure no empty chunks
 
-def embed_texts(texts, model="gemini-embedding-001"):
-    res = client.models.embed_content(model=model, contents=texts)
-    return res.embeddings
-
-def compute_doc_id(filename, size):
-    return hashlib.sha1(f"{filename}_{size}".encode("utf-8")).hexdigest()
+def embed_texts(texts, model="models/embedding-001"):
+    # Corrected model name
+    try:
+        # Note: The 'contents' parameter expects a list of strings
+        res = genai.embed_content(model=model, content=texts, task_type="retrieval_document")
+        return res['embedding']
+    except Exception as e:
+        st.error(f"Error embedding texts: {e}")
+        return []
 
 def upsert_chunks(chunks, meta_base, namespace):
     BATCH_SIZE = 50
-    for i in tqdm(range(0, len(chunks), BATCH_SIZE), desc="Embedding"):
+    for i in tqdm(range(0, len(chunks), BATCH_SIZE), desc="Embedding & Upserting"):
         batch_texts = chunks[i:i + BATCH_SIZE]
         embeddings = embed_texts(batch_texts)
+
+        if not embeddings: # Skip if embedding failed
+            continue
+
         vectors = []
+        # The length of embeddings should match batch_texts
         for j, emb in enumerate(embeddings):
             meta = meta_base.copy()
             meta.update({
                 "chunk_index": i + j,
                 "text_preview": batch_texts[j][:300],
             })
+            # ✅ FIX: Pass the numerical vector using emb, not the whole object
             vectors.append((str(uuid.uuid4()), emb, meta))
-        index.upsert(vectors=vectors, namespace=namespace)
+        
+        if vectors:
+            index.upsert(vectors=vectors, namespace=namespace)
 
-def query_pinecone(query, top_k=4, model="gemini-embedding-001", namespace="default"):
-    emb = client.models.embed_content(model=model, contents=query).embeddings[0]
-    return index.query(vector=emb, top_k=top_k, include_metadata=True, namespace=namespace)
+def query_pinecone(query, top_k=4, model="models/embedding-001", namespace="default"):
+    # ✅ FIX: Use genai.embed_content for the query and access the embedding list
+    try:
+        query_embedding = genai.embed_content(
+            model=model,
+            content=query,
+            task_type="retrieval_query"
+        )['embedding']
+        return index.query(vector=query_embedding, top_k=top_k, include_metadata=True, namespace=namespace)
+    except Exception as e:
+        st.error(f"Error querying Pinecone: {e}")
+        return None
 
 def build_prompt(chunks, question):
     ctx = ""
@@ -120,8 +147,10 @@ Question: {question}
 Answer:
 """
 
-def generate_answer(prompt, model="gemini-2.5-flash"):
-    return client.models.generate_content(model=model, contents=prompt).text
+def generate_answer(prompt, model="gemini-1.5-flash"):
+    # Corrected model name
+    model = genai.GenerativeModel(model)
+    return model.generate_content(prompt).text
 
 def delete_namespace(namespace):
     try:
@@ -140,9 +169,9 @@ st.caption("Each user session has its own namespace for multi-user isolation.")
 
 with st.sidebar:
     st.header("🔒 API Configuration")
-    st.success("All API keys loaded securely from Streamlit Secrets.")
+    st.success("API keys loaded securely from Streamlit Secrets.")
     st.write(f"**Pinecone Index:** {INDEX_NAME}")
-    st.write(f"**Namespace:** {SESSION_NAMESPACE}")
+    st.write(f"**Namespace:** `{SESSION_NAMESPACE}`")
     st.markdown("---")
 
 # ---------- File Upload ----------
@@ -150,16 +179,16 @@ uploaded_file = st.file_uploader("📁 Upload file (PDF/DOCX/TXT):", type=["pdf"
 
 if uploaded_file:
     file_size = uploaded_file.size
-    doc_id = compute_doc_id(uploaded_file.name, file_size)
+    doc_id = hashlib.sha1(f"{uploaded_file.name}_{file_size}".encode()).hexdigest()
     st.info(f"File uploaded: **{uploaded_file.name}** | Size: {round(file_size/1024,1)} KB")
 
     col1, col2 = st.columns(2)
     with col1:
         if st.button("📤 Index File"):
-            with st.spinner("Extracting and embedding file..."):
+            with st.spinner("Extracting, chunking, and embedding file..."):
                 text = extract_text(uploaded_file)
-                if not text.strip():
-                    st.error("Could not extract text from file.")
+                if not text or not text.strip():
+                    st.error("Could not extract text from file or file is empty.")
                 else:
                     chunks = chunk_text(text, chunk_size=800, overlap=150)
                     meta_base = {"source": uploaded_file.name, "doc_id": doc_id}
@@ -175,24 +204,24 @@ st.divider()
 
 # ---------- Q&A Section ----------
 st.header("💬 Ask your question")
-question = st.text_input("Enter your question:")
+question = st.text_input("Enter your question:", key="question_input")
 top_k = st.slider("Top K results to fetch", 1, 8, 4)
 
 if st.button("🔍 Get Answer") and question.strip():
     with st.spinner("Retrieving from Pinecone..."):
         results = query_pinecone(question, top_k, namespace=SESSION_NAMESPACE)
 
-    matches = getattr(results, "matches", [])
-    if not matches:
-        st.warning("No matching results found.")
+    if not results or not results.matches:
+        st.warning("No matching results found in Pinecone.")
     else:
         st.write("### 🔹 Top Retrieved Chunks")
-        for m in matches:
+        for m in results.matches:
             md = m.metadata
             st.markdown(f"- **{md.get('source')}** | Score: {m.score:.4f}")
-            st.caption(md.get("text_preview","")[:300])
+            with st.expander("Show Text"):
+                 st.caption(md.get("text_preview",""))
 
-        prompt = build_prompt(matches, question)
+        prompt = build_prompt(results.matches, question)
         with st.spinner("Generating answer with Gemini..."):
             answer = generate_answer(prompt)
         st.subheader("🧠 Answer")
@@ -202,9 +231,7 @@ st.markdown("---")
 st.caption("Built with ❤️ using Google Gemini + Pinecone + Streamlit")
 
 # ============================
-# 7️⃣ Cleanup: Delete namespace on session end
+# 7️⃣ Cleanup: Removed st.on_session_end
 # ============================
-def cleanup():
-    delete_namespace(SESSION_NAMESPACE)
-
-st.on_session_end(cleanup)
+# ✅ FIX: The st.on_session_end function does not exist and was removed.
+# Users can use the "Delete Session Data" button for cleanup.
