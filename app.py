@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 from typing import List
 from pathlib import Path
+import tempfile # <-- ADDED THIS LINE
 
 # File processing
 from pypdf import PdfReader
@@ -48,7 +49,7 @@ if "messages" not in st.session_state:
 SESSION_NAMESPACE = st.session_state.namespace
 
 # ============================
-# 3️⃣ ✨ NEW: Resilient Gemini API Call Function
+# 3️⃣ Resilient Gemini API Call Function
 # ============================
 def gemini_api_call_with_retry(api_call_func, retries=3, **kwargs):
     """
